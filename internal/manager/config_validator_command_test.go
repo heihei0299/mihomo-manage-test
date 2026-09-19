@@ -79,13 +79,30 @@ func TestConfigApplyStatusIncludesValidationCommandDiagnostic(t *testing.T) {
 	}
 }
 
-func TestConfigValidatorReturnsCancellationUnwrapped(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	runner := &validationCommandRunner{err: context.Canceled}
-	validator := NewConfigValidator(runner)
+type blockingValidationCommandRunner struct {
+	started chan struct{}
+}
 
-	if err := validator.Validate(ctx, "/tmp/config.yaml"); !errors.Is(err, context.Canceled) {
+func (r *blockingValidationCommandRunner) RunCommand(ctx context.Context, _ string, _ ...string) (string, error) {
+	close(r.started)
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func (r *blockingValidationCommandRunner) RunCommandIgnoreExit(context.Context, string, ...string) (string, error) {
+	return "", nil
+}
+
+func TestConfigValidatorReturnsCancellationUnwrapped(t *testing.T) {
+	runner := &blockingValidationCommandRunner{started: make(chan struct{})}
+	validator := NewConfigValidator(runner)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- validator.Validate(ctx, "/tmp/config.yaml") }()
+	<-runner.started
+	cancel()
+
+	if err := <-result; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Validate error = %v, want context cancellation", err)
 	}
 }
