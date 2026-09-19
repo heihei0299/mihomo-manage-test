@@ -8,10 +8,11 @@ import (
 // ConfigApplyState records the externally meaningful result of an apply.
 //
 // State contract:
-//   validation-failed -> staged config was rejected; current config is unchanged
-//   apply-failed      -> apply failed before a successful commit/reload
-//   pending-reload    -> config was committed, but runtime reload failed
-//   applied           -> config was committed and reload succeeded
+//
+//	validation-failed -> staged config was rejected; current config is unchanged
+//	apply-failed      -> apply failed before a successful commit/reload
+//	pending-reload    -> config was committed, but runtime reload failed
+//	applied           -> config was committed and reload succeeded
 //
 // An applied status may still carry ErrorSummary when only post-commit cleanup
 // failed. In that case the runtime state is applied and the error is a warning
@@ -27,10 +28,11 @@ const (
 )
 
 type ConfigApplyStatus struct {
-	State        ConfigApplyState `json:"state"`
-	AttemptedAt  time.Time        `json:"attempted_at"`
-	ConfigHash   string           `json:"config_hash"`
-	ErrorSummary string           `json:"error_summary,omitempty"`
+	State            ConfigApplyState `json:"state"`
+	AttemptedAt      time.Time        `json:"attempted_at"`
+	ConfigHash       string           `json:"config_hash"`
+	SubscriptionHash string           `json:"subscription_hash,omitempty"`
+	ErrorSummary     string           `json:"error_summary,omitempty"`
 }
 
 type ConfigManager interface {

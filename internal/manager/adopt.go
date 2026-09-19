@@ -41,7 +41,7 @@ func (p *configPipeline) AdoptConfig(ctx context.Context, force bool) (AdoptRepo
 		return report, err
 	}
 
-	rendered, err := p.previewConfig(ctx)
+	rendered, err := p.previewConfig(ctx, nil)
 	if err != nil {
 		return report, err
 	}
