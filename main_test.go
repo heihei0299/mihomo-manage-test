@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/mihomo-manager/internal/cli"
-	"github.com/anomalyco/mihomo-manager/internal/manager"
+	"github.com/heihei0299/mihomo-manage/internal/cli"
+	"github.com/heihei0299/mihomo-manage/internal/manager"
 )
 
 // captureStderr redirects os.Stderr during fn and returns what was written.

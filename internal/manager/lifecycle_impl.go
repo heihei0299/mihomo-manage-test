@@ -188,6 +188,9 @@ func (m *lifecycleManager) rollbackInstall(ctx context.Context, phase string, er
 }
 
 func (m *lifecycleManager) Install(ctx context.Context, version string, autoStart bool, onProgress ProgressCallback) error {
+	if _, err := serviceUnitPathFor(runtime.GOOS); err != nil {
+		return err
+	}
 	if version == "latest" {
 		if resolved, err := m.resolveVersion(ctx, version); err == nil {
 			version = resolved
@@ -204,6 +207,9 @@ func (m *lifecycleManager) Install(ctx context.Context, version string, autoStar
 }
 
 func (m *lifecycleManager) InstallFromLocal(ctx context.Context, localPath string, autoStart bool, onProgress ProgressCallback) error {
+	if _, err := serviceUnitPathFor(runtime.GOOS); err != nil {
+		return err
+	}
 	tempPath, err := m.resolveLocalBinary(ctx, localPath)
 	if err != nil {
 		return fmt.Errorf("local binary: %w", err)
@@ -242,6 +248,14 @@ func (m *lifecycleManager) resolveLocalBinary(ctx context.Context, localPath str
 }
 
 func (m *lifecycleManager) installBinary(ctx context.Context, binarySrc string, autoStart bool, onProgress ProgressCallback) error {
+	svcPath, err := serviceUnitPathFor(runtime.GOOS)
+	if err != nil {
+		return err
+	}
+	svcContent, err := serviceUnitContentFor(runtime.GOOS, autoStart)
+	if err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -271,8 +285,6 @@ func (m *lifecycleManager) installBinary(ctx context.Context, binarySrc string, 
 	if err := m.fs.WriteFile(configYAML, defaultConfig, filePermUserRW); err != nil {
 		return m.rollbackInstall(ctx, "bootstrap config", err)
 	}
-	svcPath := serviceUnitPath()
-	svcContent := serviceUnitContent(autoStart)
 	if err := m.fs.WriteFile(svcPath, svcContent, filePermUserRW); err != nil {
 		return m.rollbackInstall(ctx, "bootstrap service unit", err)
 	}

@@ -6,7 +6,7 @@ mihomo (Clash Meta) 代理管理工具。管理实例的完整生命周期：安
 
 ### 从 Release 下载
 
-从 [Releases](https://github.com/heihei0299/mihomo-manage/releases) 下载对应平台的二进制：
+从 [Releases](https://github.com/heihei0299/mihomo-manage/releases) 下载对应平台的二进制。当前正式支持 Linux amd64、Linux arm64、Darwin amd64 和 Darwin arm64；Windows 暂不发布：
 
 ```bash
 # Linux amd64

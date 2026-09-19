@@ -11,14 +11,31 @@ import (
 var serviceName = ServiceName
 
 func serviceUnitPath() string {
-	if runtime.GOOS == "darwin" {
-		return "/Library/LaunchAgents/mihomo.plist"
+	path, _ := serviceUnitPathFor(runtime.GOOS)
+	return path
+}
+
+func serviceUnitPathFor(goos string) (string, error) {
+	switch goos {
+	case "linux":
+		return "/etc/systemd/system/mihomo.service", nil
+	case "darwin":
+		return "/Library/LaunchAgents/mihomo.plist", nil
+	default:
+		return "", UnsupportedPlatformError{Feature: "service", GOOS: goos}
 	}
-	return "/etc/systemd/system/mihomo.service"
 }
 
 func serviceUnitContent(autoStart bool) []byte {
-	if runtime.GOOS == "darwin" {
+	content, _ := serviceUnitContentFor(runtime.GOOS, autoStart)
+	return content
+}
+
+func serviceUnitContentFor(goos string, autoStart bool) ([]byte, error) {
+	if _, err := serviceUnitPathFor(goos); err != nil {
+		return nil, err
+	}
+	if goos == "darwin" {
 		if autoStart {
 			return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -38,7 +55,7 @@ func serviceUnitContent(autoStart bool) []byte {
   <true/>
 </dict>
 </plist>
-`)
+`), nil
 		}
 		return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -54,7 +71,7 @@ func serviceUnitContent(autoStart bool) []byte {
   </array>
 </dict>
 </plist>
-`)
+`), nil
 	}
 	return []byte(`[Unit]
 Description=mihomo (Clash Meta) proxy
@@ -69,7 +86,7 @@ RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-`)
+`), nil
 }
 
 type osStrategy interface {
@@ -295,14 +312,10 @@ func (s *OSServiceManager) goos() string {
 func (s *OSServiceManager) strategy() (osStrategy, error) {
 	strat := strategyFor(s.cmd, s.fs, s.goos())
 	if strat == nil {
-		return nil, errUnsupportedOS{s.goos()}
+		return nil, UnsupportedPlatformError{Feature: "service", GOOS: s.goos()}
 	}
 	return strat, nil
 }
-
-type errUnsupportedOS struct{ os string }
-
-func (e errUnsupportedOS) Error() string { return fmt.Sprintf("unsupported OS: %s", e.os) }
 
 type OSServiceManager struct {
 	cmd    CommandRunner

@@ -1,4 +1,4 @@
-module github.com/anomalyco/mihomo-manager
+module github.com/heihei0299/mihomo-manage
 
 go 1.24.0
 

@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"runtime"
 	"strings"
 )
 
@@ -82,7 +83,10 @@ func (m *serviceController) SetAutoStart(ctx context.Context, enabled bool) erro
 	if !m.fs.FileExists(binaryPath) {
 		return ErrMihomoNotInstalled
 	}
-	svcPath := serviceUnitPath()
+	svcPath, err := serviceUnitPathFor(runtime.GOOS)
+	if err != nil {
+		return err
+	}
 	if enabled {
 		return m.svcMgr.EnableAutoStart(ctx, serviceName, svcPath)
 	}
