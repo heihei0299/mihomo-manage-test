@@ -82,14 +82,27 @@ func newConfigPipeline(fs FileSystem, source ReleaseSource, opts configPipelineO
 	} else {
 		p.lock = noopConfigUpdateLock{}
 	}
-	p.migrateLegacyTemplate()
+	p.migrateLegacyTemplate(context.Background())
 	return p
 }
 
-// migrateLegacyTemplate renames the old config-template.yaml to the override
-// file on first use, so existing setups carry over without manual steps. It
-// runs once: after a successful rename the legacy path no longer exists.
-func (p *configPipeline) migrateLegacyTemplate() {
+// migrateLegacyTemplate keeps the legacy rename inside the same write lock as
+// the other config state changes. A failed lock acquisition is retried on the
+// next public config operation.
+func (p *configPipeline) migrateLegacyTemplate(ctx context.Context) {
+	if !p.fs.FileExists(legacyTemplatePath) || p.fs.FileExists(OverrideFilePath) {
+		return
+	}
+	release, err := p.lock.Acquire(ctx)
+	if err != nil {
+		p.warn(fmt.Sprintf("failed to acquire config update lock for migration: %v", err))
+		return
+	}
+	defer release()
+	p.migrateLegacyTemplateLocked()
+}
+
+func (p *configPipeline) migrateLegacyTemplateLocked() {
 	if !p.fs.FileExists(legacyTemplatePath) || p.fs.FileExists(OverrideFilePath) {
 		return
 	}
@@ -144,13 +157,19 @@ func looksLikeURL(s string) bool {
 }
 
 func (p *configPipeline) SetSubscriptionSource(ctx context.Context, source string) error {
-	if err := p.fs.MkdirAll(stateDir, filePermUserRWX); err != nil {
-		return fmt.Errorf("creating state directory: %w", err)
-	}
-
 	trimmed := strings.TrimSpace(source)
 	if trimmed == "" {
 		return fmt.Errorf("subscription source cannot be empty")
+	}
+
+	release, err := p.lock.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	if err := p.fs.MkdirAll(stateDir, filePermUserRWX); err != nil {
+		return fmt.Errorf("creating state directory: %w", err)
 	}
 
 	snapshots := make(map[string]fileSnapshot, 3)
@@ -273,6 +292,16 @@ func (p *configPipeline) subscriptionSource() (string, error) {
 }
 
 func (p *configPipeline) PreviewConfig(ctx context.Context) (string, error) {
+	release, err := p.lock.Acquire(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return p.previewConfig(ctx)
+}
+
+func (p *configPipeline) previewConfig(ctx context.Context) (string, error) {
+	p.migrateLegacyTemplateLocked()
 	if _, err := p.subscriptionSource(); err != nil {
 		return "", err
 	}
@@ -389,7 +418,7 @@ func (p *configPipeline) refreshSubscription(ctx context.Context) error {
 }
 
 func (p *configPipeline) buildApplyPreview(ctx context.Context) (string, error) {
-	preview, err := p.PreviewConfig(ctx)
+	preview, err := p.previewConfig(ctx)
 	if err != nil {
 		return "", err
 	}
