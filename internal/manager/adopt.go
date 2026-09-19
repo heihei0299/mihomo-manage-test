@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -26,6 +27,11 @@ type AdoptReport struct {
 // changes once the differences have been adopted.
 func (p *configPipeline) AdoptConfig(ctx context.Context, force bool) (AdoptReport, error) {
 	report := AdoptReport{}
+	release, err := p.acquireConfigUpdate(ctx)
+	if err != nil {
+		return report, err
+	}
+	defer release()
 
 	cur, err := p.fs.ReadFile(configYAML)
 	if err != nil {
@@ -35,7 +41,7 @@ func (p *configPipeline) AdoptConfig(ctx context.Context, force bool) (AdoptRepo
 		return report, err
 	}
 
-	rendered, err := p.PreviewConfig(ctx)
+	rendered, err := p.previewConfig(ctx)
 	if err != nil {
 		return report, err
 	}
@@ -105,5 +111,12 @@ func (p *configPipeline) writeOverrideFields(fields []string, curMap map[string]
 	if err := p.fs.MkdirAll(configDir, filePermUserRWX); err != nil {
 		return err
 	}
-	return p.fs.WriteFile(OverrideFilePath, out, filePermUserRW)
+	tmpPath := OverrideFilePath + ".tmp"
+	if err := p.fs.WriteFile(tmpPath, out, filePermUserRW); err != nil {
+		return errors.Join(fmt.Errorf("staging override file: %w", err), p.fs.Remove(tmpPath))
+	}
+	if err := p.fs.Rename(tmpPath, OverrideFilePath); err != nil {
+		return errors.Join(fmt.Errorf("committing override file: %w", err), p.fs.Remove(tmpPath))
+	}
+	return nil
 }
