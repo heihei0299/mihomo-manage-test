@@ -10,15 +10,25 @@ import (
 
 var serviceName = ServiceName
 
-func serviceUnitPath() string {
-	if runtime.GOOS == "darwin" {
-		return "/Library/LaunchAgents/mihomo.plist"
+func serviceUnitPathFor(goos string) (string, error) {
+	switch goos {
+	case "linux":
+		return "/etc/systemd/system/mihomo.service", nil
+	case "darwin":
+		return "/Library/LaunchAgents/mihomo.plist", nil
+	default:
+		return "", UnsupportedPlatformError{Feature: "service", GOOS: goos}
 	}
-	return "/etc/systemd/system/mihomo.service"
 }
 
-func serviceUnitContent(autoStart bool) []byte {
-	if runtime.GOOS == "darwin" {
+func serviceUnitPath() string {
+	path, _ := serviceUnitPathFor(runtime.GOOS)
+	return path
+}
+
+func serviceUnitContentFor(goos string, autoStart bool) ([]byte, error) {
+	switch goos {
+	case "darwin":
 		if autoStart {
 			return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -38,7 +48,7 @@ func serviceUnitContent(autoStart bool) []byte {
   <true/>
 </dict>
 </plist>
-`)
+`), nil
 		}
 		return []byte(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -54,9 +64,9 @@ func serviceUnitContent(autoStart bool) []byte {
   </array>
 </dict>
 </plist>
-`)
-	}
-	return []byte(`[Unit]
+`), nil
+	case "linux":
+		return []byte(`[Unit]
 Description=mihomo (Clash Meta) proxy
 After=network.target
 
@@ -69,7 +79,15 @@ RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-`)
+`), nil
+	default:
+		return nil, UnsupportedPlatformError{Feature: "service", GOOS: goos}
+	}
+}
+
+func serviceUnitContent(autoStart bool) []byte {
+	content, _ := serviceUnitContentFor(runtime.GOOS, autoStart)
+	return content
 }
 
 type osStrategy interface {
@@ -293,16 +311,13 @@ func (s *OSServiceManager) goos() string {
 }
 
 func (s *OSServiceManager) strategy() (osStrategy, error) {
-	strat := strategyFor(s.cmd, s.fs, s.goos())
+	goos := s.goos()
+	strat := strategyFor(s.cmd, s.fs, goos)
 	if strat == nil {
-		return nil, errUnsupportedOS{s.goos()}
+		return nil, UnsupportedPlatformError{Feature: "service", GOOS: goos}
 	}
 	return strat, nil
 }
-
-type errUnsupportedOS struct{ os string }
-
-func (e errUnsupportedOS) Error() string { return fmt.Sprintf("unsupported OS: %s", e.os) }
 
 type OSServiceManager struct {
 	cmd    CommandRunner

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	nativescheduler "github.com/anomalyco/mihomo-manager/internal/scheduler"
+	nativescheduler "github.com/heihei0299/mihomo-manage/internal/scheduler"
 )
 
 const scheduleFile = "/opt/mihomo-manager/state/schedule.txt"

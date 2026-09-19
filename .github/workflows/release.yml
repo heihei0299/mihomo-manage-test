@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CANONICAL_REPOSITORY: heihei0299/mihomo-manage
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -42,9 +45,6 @@ jobs:
           - goos: darwin
             goarch: arm64
             ext: ""
-          - goos: windows
-            goarch: amd64
-            ext: ".exe"
 
     steps:
       - uses: actions/checkout@v4
@@ -56,7 +56,7 @@ jobs:
       - name: build
         run: |
           mkdir -p dist
-          go build -ldflags "-X main.version=${{ github.ref_name }}" \
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags "-X main.version=${{ github.ref_name }}" \
             -o "dist/mihomo-manager-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" \
             .
 
@@ -130,7 +130,7 @@ jobs:
             echo "pkgname = mihomo-manager"
             echo "pkgver = ${VERSION}-1"
             echo "pkgdesc = mihomo (Clash Meta) proxy manager"
-            echo "url = https://github.com/${{ github.repository }}"
+            echo "url = https://github.com/${{ env.CANONICAL_REPOSITORY }}"
             echo "builddate = $(date +%s)"
             echo "packager = mihomo-manager <dev@example.com>"
             echo "size = $BINARY_SIZE"

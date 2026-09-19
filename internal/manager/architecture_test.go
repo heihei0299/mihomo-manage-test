@@ -76,7 +76,7 @@ func TestSchedulerDoesNotImportManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read scheduler directory: %v", err)
 	}
-	const managerImport = "github.com/anomalyco/mihomo-manager/internal/manager"
+	const managerImport = "github.com/heihei0299/mihomo-manage/internal/manager"
 	fileset := token.NewFileSet()
 	for _, entry := range entries {
 		name := entry.Name()

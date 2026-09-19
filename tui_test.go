@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/mihomo-manager/internal/manager"
+	"github.com/heihei0299/mihomo-manage/internal/manager"
 )
 
 type tuiMockControl struct {

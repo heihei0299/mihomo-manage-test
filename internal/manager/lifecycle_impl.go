@@ -19,6 +19,11 @@ import (
 
 const backupDir = managerRoot + "/backups"
 
+func ensureSupportedServicePlatform() error {
+	_, err := serviceUnitPathFor(runtime.GOOS)
+	return err
+}
+
 type lifecycleManager struct {
 	fs       FileSystem
 	cmd      CommandRunner
@@ -177,7 +182,9 @@ func (m *lifecycleManager) rollbackInstall(ctx context.Context, phase string, er
 	if rollbackErr := m.fs.Remove(configDir); rollbackErr != nil {
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("remove config: %w", rollbackErr))
 	}
-	if rollbackErr := m.fs.Remove(serviceUnitPath()); rollbackErr != nil {
+	if servicePath, pathErr := serviceUnitPathFor(runtime.GOOS); pathErr != nil {
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("resolve service unit: %w", pathErr))
+	} else if rollbackErr := m.fs.Remove(servicePath); rollbackErr != nil {
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("remove service unit: %w", rollbackErr))
 	}
 	failure := fmt.Errorf("install failed at %s: %w", phase, err)
@@ -188,6 +195,9 @@ func (m *lifecycleManager) rollbackInstall(ctx context.Context, phase string, er
 }
 
 func (m *lifecycleManager) Install(ctx context.Context, version string, autoStart bool, onProgress ProgressCallback) error {
+	if err := ensureSupportedServicePlatform(); err != nil {
+		return err
+	}
 	if version == "latest" {
 		if resolved, err := m.resolveVersion(ctx, version); err == nil {
 			version = resolved
@@ -204,6 +214,9 @@ func (m *lifecycleManager) Install(ctx context.Context, version string, autoStar
 }
 
 func (m *lifecycleManager) InstallFromLocal(ctx context.Context, localPath string, autoStart bool, onProgress ProgressCallback) error {
+	if err := ensureSupportedServicePlatform(); err != nil {
+		return err
+	}
 	tempPath, err := m.resolveLocalBinary(ctx, localPath)
 	if err != nil {
 		return fmt.Errorf("local binary: %w", err)
@@ -242,6 +255,9 @@ func (m *lifecycleManager) resolveLocalBinary(ctx context.Context, localPath str
 }
 
 func (m *lifecycleManager) installBinary(ctx context.Context, binarySrc string, autoStart bool, onProgress ProgressCallback) error {
+	if err := ensureSupportedServicePlatform(); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -271,8 +287,14 @@ func (m *lifecycleManager) installBinary(ctx context.Context, binarySrc string, 
 	if err := m.fs.WriteFile(configYAML, defaultConfig, filePermUserRW); err != nil {
 		return m.rollbackInstall(ctx, "bootstrap config", err)
 	}
-	svcPath := serviceUnitPath()
-	svcContent := serviceUnitContent(autoStart)
+	svcPath, err := serviceUnitPathFor(runtime.GOOS)
+	if err != nil {
+		return m.rollbackInstall(ctx, "bootstrap service unit", err)
+	}
+	svcContent, err := serviceUnitContentFor(runtime.GOOS, autoStart)
+	if err != nil {
+		return m.rollbackInstall(ctx, "bootstrap service unit", err)
+	}
 	if err := m.fs.WriteFile(svcPath, svcContent, filePermUserRW); err != nil {
 		return m.rollbackInstall(ctx, "bootstrap service unit", err)
 	}
@@ -317,6 +339,9 @@ func (m *lifecycleManager) installBinary(ctx context.Context, binarySrc string, 
 }
 
 func (m *lifecycleManager) Uninstall(ctx context.Context, keepBackup bool, onProgress ProgressCallback) error {
+	if err := ensureSupportedServicePlatform(); err != nil {
+		return err
+	}
 	if !m.fs.FileExists(binaryPath) {
 		return ErrMihomoNotInstalled
 	}
@@ -377,6 +402,9 @@ func (m *lifecycleManager) Uninstall(ctx context.Context, keepBackup bool, onPro
 //	failure after replacement   -> restore old binary and prior running state
 //	rollback failure            -> return both primary and rollback errors
 func (m *lifecycleManager) Upgrade(ctx context.Context, version string, onProgress ProgressCallback) error {
+	if err := ensureSupportedServicePlatform(); err != nil {
+		return err
+	}
 	if !m.fs.FileExists(binaryPath) {
 		return ErrMihomoNotInstalled
 	}
