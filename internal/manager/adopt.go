@@ -33,6 +33,9 @@ func (p *configPipeline) AdoptConfig(ctx context.Context, force bool) (AdoptRepo
 	}
 	defer release()
 
+	if err := p.recoverConfigTransactionLocked(); err != nil {
+		return report, err
+	}
 	cur, err := p.fs.ReadFile(configYAML)
 	if err != nil {
 		if os.IsNotExist(err) {

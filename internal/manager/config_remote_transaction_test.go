@@ -356,6 +356,101 @@ func TestRemoteRestoreFailureRetainsPrimaryAndRecoveryErrors(t *testing.T) {
 	}
 }
 
+func TestConfigManagerRecoversPreparedRemoteCommit(t *testing.T) {
+	configBackup := configYAML + ".bak.prepared-recovery"
+	subscriptionBackup := subscriptionDataFile + ".bak.prepared-recovery"
+	transaction := configTransactionState{
+		State:               configTransactionPrepared,
+		ConfigBackup:        configBackup,
+		ConfigExisted:       true,
+		SubscriptionBackup:  subscriptionBackup,
+		SubscriptionStaged:  true,
+		SubscriptionExisted: true,
+	}
+	transactionData, err := json.Marshal(transaction)
+	if err != nil {
+		t.Fatalf("marshal transaction: %v", err)
+	}
+	fs := &fakeFileSystem{
+		fileExists: map[string]bool{configApplyTransactionFile: true},
+		written: map[string][]byte{
+			configApplyTransactionFile: transactionData,
+			configYAML:                 []byte("new config\n"),
+			subscriptionDataFile:       []byte("new subscription\n"),
+			configBackup:               []byte("old config\n"),
+			subscriptionBackup:         []byte("old subscription\n"),
+		},
+	}
+
+	NewConfigManager(fs, &fakeReleaseSource{}, nil, nil)
+	if got := string(fs.written[configYAML]); got != "old config\n" {
+		t.Fatalf("recovered config = %q, want old config", got)
+	}
+	if got := string(fs.written[subscriptionDataFile]); got != "old subscription\n" {
+		t.Fatalf("recovered subscription = %q, want old subscription", got)
+	}
+	if _, exists := fs.written[configApplyTransactionFile]; exists {
+		t.Fatal("recovery transaction marker should be removed")
+	}
+}
+
+func TestConfigManagerCleansCommittedTransactionArtifacts(t *testing.T) {
+	transaction := configTransactionState{
+		State:                  configTransactionCommitted,
+		SubscriptionStaged:     true,
+		SubscriptionBackup:     subscriptionDataFile + ".bak.committed-cleanup",
+		StagedConfigDir:        configDir + "/.mihomo-config-staging-committed-cleanup",
+		StagedSubscriptionPath: subscriptionDataFile + ".tmp.committed-cleanup",
+	}
+	transactionData, err := json.Marshal(transaction)
+	if err != nil {
+		t.Fatalf("marshal transaction: %v", err)
+	}
+	fs := &fakeFileSystem{
+		fileExists: map[string]bool{configApplyTransactionFile: true},
+		written: map[string][]byte{
+			configApplyTransactionFile:         transactionData,
+			configYAML:                         []byte("new config\n"),
+			subscriptionDataFile:               []byte("new subscription\n"),
+			transaction.SubscriptionBackup:     []byte("old subscription\n"),
+			transaction.StagedSubscriptionPath: []byte("staged subscription\n"),
+		},
+	}
+	fs.written[transaction.StagedConfigDir+"/config.yaml"] = []byte("staged config\n")
+
+	NewConfigManager(fs, &fakeReleaseSource{}, nil, nil)
+	if got := string(fs.written[configYAML]); got != "new config\n" {
+		t.Fatalf("committed config = %q, want new config", got)
+	}
+	if got := string(fs.written[subscriptionDataFile]); got != "new subscription\n" {
+		t.Fatalf("committed subscription = %q, want new subscription", got)
+	}
+	for _, path := range []string{configApplyTransactionFile, transaction.SubscriptionBackup, transaction.StagedSubscriptionPath} {
+		if _, exists := fs.written[path]; exists {
+			t.Fatalf("transaction artifact %q should be removed", path)
+		}
+	}
+}
+
+func TestConfigWriteIsBlockedWhenTransactionRecoveryFails(t *testing.T) {
+	fs := &fakeFileSystem{
+		fileExists: map[string]bool{configApplyTransactionFile: true},
+		written: map[string][]byte{
+			configApplyTransactionFile: []byte("not json"),
+			subscriptionSourceFile:     []byte("remote\n"),
+			subscriptionURLFile:        []byte("https://example.com/old.yaml\n"),
+		},
+	}
+	m := NewConfigManager(fs, &fakeReleaseSource{}, nil, nil)
+
+	if err := m.SetSubscriptionSource(context.Background(), "new local data"); err == nil {
+		t.Fatal("SetSubscriptionSource should be blocked by failed transaction recovery")
+	}
+	if got := string(fs.written[subscriptionURLFile]); got != "https://example.com/old.yaml\n" {
+		t.Fatalf("subscription URL after blocked write = %q, want old URL", got)
+	}
+}
+
 func TestConfigManagerRecoversInterruptedRemoteCommit(t *testing.T) {
 	configBackup := configYAML + ".bak.recovery"
 	subscriptionBackup := subscriptionDataFile + ".bak.recovery"

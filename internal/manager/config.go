@@ -14,7 +14,10 @@ import (
 	"time"
 )
 
-const legacyTemplatePath = "/opt/mihomo/etc/config-template.yaml"
+const (
+	legacyTemplatePath         = "/opt/mihomo/etc/config-template.yaml"
+	configApplyTransactionFile = managerRoot + "/state/config-apply-transaction.json"
+)
 
 type ConfigValidator interface {
 	Validate(ctx context.Context, configPath string) error
@@ -138,21 +141,29 @@ func (p *configPipeline) migrateLegacyTemplateLocked() {
 	p.warn("migrated config-template.yaml to override.yaml. The old file name is no longer recognized.")
 }
 
+type configTransactionPhase string
+
 const (
-	configTransactionPrepared        = "prepared"
-	configTransactionConfigCommitted = "config-committed"
-	configTransactionCommitted       = "committed"
+	// prepared means backups and the transaction marker exist, but neither
+	// generated input has been committed.
+	configTransactionPrepared configTransactionPhase = "prepared"
+	// config-committed means config.yaml was replaced while subscription-data
+	// still points at the old input; recovery restores both files.
+	configTransactionConfigCommitted configTransactionPhase = "config-committed"
+	// committed means both generated inputs were replaced; recovery only cleans
+	// transaction-local artifacts.
+	configTransactionCommitted configTransactionPhase = "committed"
 )
 
 type configTransactionState struct {
-	State                  string `json:"state"`
-	ConfigBackup           string `json:"config_backup,omitempty"`
-	ConfigExisted          bool   `json:"config_existed"`
-	SubscriptionBackup     string `json:"subscription_backup,omitempty"`
-	SubscriptionStaged     bool   `json:"subscription_staged"`
-	SubscriptionExisted    bool   `json:"subscription_existed"`
-	StagedConfigDir        string `json:"staged_config_dir,omitempty"`
-	StagedSubscriptionPath string `json:"staged_subscription_path,omitempty"`
+	State                  configTransactionPhase `json:"state"`
+	ConfigBackup           string                 `json:"config_backup,omitempty"`
+	ConfigExisted          bool                   `json:"config_existed"`
+	SubscriptionBackup     string                 `json:"subscription_backup,omitempty"`
+	SubscriptionStaged     bool                   `json:"subscription_staged"`
+	SubscriptionExisted    bool                   `json:"subscription_existed"`
+	StagedConfigDir        string                 `json:"staged_config_dir,omitempty"`
+	StagedSubscriptionPath string                 `json:"staged_subscription_path,omitempty"`
 }
 
 func (p *configPipeline) writeConfigTransaction(transaction configTransactionState) error {
@@ -302,6 +313,9 @@ func (p *configPipeline) SetSubscriptionSource(ctx context.Context, source strin
 	}
 	defer release()
 
+	if err := p.recoverConfigTransactionLocked(); err != nil {
+		return err
+	}
 	if err := p.fs.MkdirAll(stateDir, filePermUserRWX); err != nil {
 		return fmt.Errorf("creating state directory: %w", err)
 	}
@@ -436,6 +450,9 @@ func (p *configPipeline) PreviewConfig(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer release()
+	if err := p.recoverConfigTransactionLocked(); err != nil {
+		return "", err
+	}
 	return p.previewConfig(ctx, nil)
 }
 

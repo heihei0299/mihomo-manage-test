@@ -17,6 +17,5 @@ const (
 	subscriptionURLFile        = managerRoot + "/state/subscription-url.txt"
 	subscriptionSourceFile     = managerRoot + "/state/subscription-source.txt"
 	subscriptionUpdateLockFile = managerRoot + "/state/config-update.lock"
-	configApplyStatusFile      = managerRoot + "/state/config-apply-status.json"
-	configApplyTransactionFile = managerRoot + "/state/config-apply-transaction.json"
+	configApplyStatusFile = managerRoot + "/state/config-apply-status.json"
 )
