@@ -81,6 +81,36 @@ func TestSetSubscriptionSourceHonorsCancellationWhileWaiting(t *testing.T) {
 	}
 }
 
+type failOnceConfigUpdateLock struct {
+	calls int
+}
+
+func (l *failOnceConfigUpdateLock) Acquire(context.Context) (func(), error) {
+	l.calls++
+	if l.calls == 1 {
+		return nil, ErrConfigUpdateBusy
+	}
+	return func() {}, nil
+}
+
+func TestLegacyMigrationRetriesAfterInitialLockBusy(t *testing.T) {
+	fs := &fakeFileSystem{
+		fileExists: map[string]bool{legacyTemplatePath: true, subscriptionDataFile: true},
+		written: map[string][]byte{
+			legacyTemplatePath:   []byte("mode: rule\n"),
+			subscriptionDataFile: []byte("mode: rule\n"),
+		},
+	}
+	m := NewConfigManager(fs, &fakeReleaseSource{}, nil, nil, WithConfigUpdateLock(&failOnceConfigUpdateLock{}))
+
+	if _, err := m.PreviewConfig(context.Background()); err != nil {
+		t.Fatalf("PreviewConfig failed: %v", err)
+	}
+	if got := string(fs.written[OverrideFilePath]); got != "mode: rule\n" {
+		t.Fatalf("override after retry = %q, want migrated legacy template", got)
+	}
+}
+
 func TestPreviewConfigUsesConfigUpdateLockForLegacyMigration(t *testing.T) {
 	lock := &fakeConfigUpdateLock{}
 	fs := &fakeFileSystem{

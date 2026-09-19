@@ -111,6 +111,10 @@ func (p *configPipeline) migrateLegacyTemplate() {
 		return
 	}
 	defer release()
+	p.migrateLegacyTemplateLocked()
+}
+
+func (p *configPipeline) migrateLegacyTemplateLocked() {
 	if !p.fs.FileExists(legacyTemplatePath) || p.fs.FileExists(OverrideFilePath) {
 		return
 	}
@@ -309,6 +313,7 @@ func (p *configPipeline) PreviewConfig(ctx context.Context) (string, error) {
 }
 
 func (p *configPipeline) previewConfig(ctx context.Context) (string, error) {
+	p.migrateLegacyTemplateLocked()
 	if _, err := p.subscriptionSource(); err != nil {
 		return "", err
 	}
