@@ -389,6 +389,9 @@ func (m *lifecycleManager) Uninstall(ctx context.Context, keepBackup bool, onPro
 //	failure after replacement   -> restore old binary and prior running state
 //	rollback failure            -> return both primary and rollback errors
 func (m *lifecycleManager) Upgrade(ctx context.Context, version string, onProgress ProgressCallback) error {
+	if _, err := serviceUnitPathFor(runtime.GOOS); err != nil {
+		return err
+	}
 	if !m.fs.FileExists(binaryPath) {
 		return ErrMihomoNotInstalled
 	}
