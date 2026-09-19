@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -37,15 +36,28 @@ func (noopConfigUpdateLock) Acquire(context.Context) (func(), error) {
 	return func() {}, nil
 }
 
-type configValidator struct{}
+type configValidator struct {
+	cmd CommandRunner
+}
 
 func (v *configValidator) Validate(ctx context.Context, configPath string) error {
-	cmd := exec.CommandContext(ctx, binaryPath, "-t", "-d", filepath.Dir(configPath))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("config validation failed:\n%s", string(out))
+	if v.cmd == nil {
+		return errors.New("config validator command runner is not configured")
 	}
-	return nil
+	out, err := v.cmd.RunCommand(ctx, binaryPath, "-t", "-d", filepath.Dir(configPath))
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if diagnostic := strings.TrimSpace(out); diagnostic != "" {
+		return fmt.Errorf("config validation failed: %w: %s", err, diagnostic)
+	}
+	return fmt.Errorf("config validation failed: %w", err)
 }
 
 type configPipelineOptions struct {

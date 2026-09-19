@@ -91,9 +91,12 @@ func (OSSystem) Chmod(path string, perm uint32) error {
 
 func (OSSystem) RunCommand(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return string(out), ctxErr
+		}
+		return strings.TrimSpace(string(out)), err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
