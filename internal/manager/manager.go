@@ -109,8 +109,12 @@ type ServiceManager interface {
 	AutoStartEnabled(ctx context.Context, name string) (bool, error)
 }
 
-func NewConfigValidator() ConfigValidator {
-	return &configValidator{}
+func NewConfigValidator(runners ...CommandRunner) ConfigValidator {
+	var runner CommandRunner = OSSystem{}
+	if len(runners) > 0 && runners[0] != nil {
+		runner = runners[0]
+	}
+	return &configValidator{cmd: runner}
 }
 
 const ServiceName = "mihomo"

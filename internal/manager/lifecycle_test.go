@@ -69,7 +69,7 @@ func TestLifecycleSubscriptionUpdate(t *testing.T) {
 	dl := &fakeDownloader{content: "proxies:\n  - name: node1\n    type: ss"}
 	linkStorage(fs, &dl.fakeReleaseSource)
 	svc := &mockServiceManager{}
-	m := NewConfigManager(fs, dl, &configValidator{}, func(ctx context.Context) error {
+	m := NewConfigManager(fs, dl, &passValidator{}, func(ctx context.Context) error {
 		return svc.Reload(context.Background(), serviceName)
 	})
 

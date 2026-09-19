@@ -708,6 +708,10 @@ func (m model) statusView() string {
 	if configState == "" || m.configErr != nil {
 		configState = "unknown"
 	}
+	configDiagnostic := ""
+	if m.configStatus.ErrorSummary != "" {
+		configDiagnostic = "\nConfig error: " + m.configStatus.ErrorSummary
+	}
 	scheduleState := "off"
 	if m.scheduleErr != nil {
 		var legacy manager.LegacyScheduleError
@@ -728,7 +732,7 @@ func (m model) statusView() string {
 			"│ schedule: %-15s │\n"+
 			"└────────────────────────────┘%s%s\n\n"+
 			"r) Refresh    q) Quit",
-		stateStr, version, autostart, configState, scheduleState, actions, result,
+		stateStr, version, autostart, configState, scheduleState, actions, result+configDiagnostic,
 	)
 }
 

@@ -27,7 +27,7 @@ func main() {
 	svcMgr := manager.NewOSServiceManager(oss, oss)
 	sched := manager.NewNativeScheduleManager(oss, oss)
 	lifecycle := manager.NewLifecycleManager(oss, oss, oss, svcMgr, sched)
-	cfg := manager.NewConfigManager(oss, oss, manager.NewConfigValidator(), func(ctx context.Context) error {
+	cfg := manager.NewConfigManager(oss, oss, manager.NewConfigValidator(oss), func(ctx context.Context) error {
 		return svcMgr.Reload(ctx, manager.ServiceName)
 	}, manager.WithConfigUpdateLock(manager.NewFileConfigUpdateLock()))
 	ctrl := manager.NewServiceControl(oss, oss, svcMgr, cfg.ValidateConfig)

@@ -97,6 +97,20 @@ func runActionCmd(ctrl manager.ServiceControl, lifecycle manager.LifecycleManage
 	return done.err
 }
 
+func TestTUIStatusShowsConfigValidationDiagnostic(t *testing.T) {
+	m := model{
+		status: &manager.Status{Installed: true, InstanceState: manager.Running},
+		configStatus: manager.ConfigApplyStatus{
+			State:        manager.ConfigValidationFailed,
+			ErrorSummary: "parse error at line 4",
+		},
+	}
+
+	if got := m.statusView(); !strings.Contains(got, "parse error at line 4") {
+		t.Fatalf("status view = %q, want validation diagnostic", got)
+	}
+}
+
 func TestTUIStatusShowsConfigApplyFailure(t *testing.T) {
 	m := model{
 		status: &manager.Status{Installed: true, InstanceState: manager.Running},
