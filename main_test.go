@@ -90,26 +90,6 @@ func TestConfigOverrideEditEmptyResultDoesNotUpdate(t *testing.T) {
 	}
 }
 
-func TestConfigOverrideEditUnchangedResultDoesNotUpdate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "override.yaml")
-	if err := os.WriteFile(path, []byte("mode: rule\n"), 0o644); err != nil {
-		t.Fatalf("writing existing override: %v", err)
-	}
-	script := filepath.Join(t.TempDir(), "unchanged-editor.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("writing editor script: %v", err)
-	}
-	t.Setenv("EDITOR", script)
-	cfg := &tuiMockConfig{}
-
-	if code := cliEditFile(cfg, path, []string{"edit"}); code != 0 {
-		t.Fatalf("exit code = %d, want success for unchanged content", code)
-	}
-	if cfg.updateCalled {
-		t.Fatal("UpdateConfig must not be called when editor leaves content unchanged")
-	}
-}
-
 func TestCLILogsForOSReturnsTypedUnsupportedError(t *testing.T) {
 	err := runCLILogsForOS("windows", nil)
 	var unsupported manager.UnsupportedPlatformError

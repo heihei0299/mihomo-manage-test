@@ -277,6 +277,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "c":
 			if isInstalled(m.status) {
+				m.execResult = ""
+				m.actionErr = nil
 				m.mode = modeConfig
 				m.configTab = configTabSubscription
 				m.previewContent = ""

@@ -170,6 +170,20 @@ func TestTUISubscriptionConfigOffersEditor(t *testing.T) {
 	}
 }
 
+func TestEditorCommandSupportsQuotedExecutable(t *testing.T) {
+	cmd, err := editorCommand(`"/tmp/my editor" --wait`, "/tmp/subscription")
+	if err != nil {
+		t.Fatalf("editorCommand failed: %v", err)
+	}
+	if cmd.Path != "/tmp/my editor" {
+		t.Fatalf("editor path = %q, want quoted path without quotes", cmd.Path)
+	}
+	want := []string{"/tmp/my editor", "--wait", "/tmp/subscription"}
+	if strings.Join(cmd.Args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("editor args = %v, want %v", cmd.Args, want)
+	}
+}
+
 func TestEditorCommandPreservesArguments(t *testing.T) {
 	cmd, err := editorCommand("code --wait", "/tmp/subscription")
 	if err != nil {

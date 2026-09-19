@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -338,12 +337,6 @@ func cliEditFile(cfg manager.ConfigManager, path string, args []string) int {
 		fmt.Fprintf(os.Stderr, "usage: mihomo-manager %s edit\n", path)
 		return 1
 	}
-	before, beforeErr := os.ReadFile(path)
-	hadBefore := beforeErr == nil
-	if beforeErr != nil && !os.IsNotExist(beforeErr) {
-		fmt.Fprintf(os.Stderr, "editor result unavailable: %v\n", beforeErr)
-		return 1
-	}
 	cmd, err := configuredEditorCommand(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "editor failed: %v\n", err)
@@ -364,13 +357,6 @@ func cliEditFile(cfg manager.ConfigManager, path string, args []string) int {
 	if strings.TrimSpace(string(data)) == "" {
 		fmt.Fprintln(os.Stderr, "editor result is empty")
 		return 1
-	}
-	// A clean editor exit without changes is a successful no-op, not an apply.
-	if hadBefore && bytes.Equal(before, data) {
-		if !quietMode {
-			fmt.Println("config unchanged")
-		}
-		return 0
 	}
 	if err := cfg.UpdateConfig(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "config update failed: %v\n", err)
