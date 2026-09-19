@@ -68,12 +68,13 @@ type configPipelineOptions struct {
 }
 
 type configPipeline struct {
-	fs       FileSystem
-	source   ReleaseSource
-	onReload func(ctx context.Context) error
-	validate ConfigValidator
-	warn     func(msg string)
-	lock     ConfigUpdateLock
+	fs          FileSystem
+	source      ReleaseSource
+	onReload    func(ctx context.Context) error
+	validate    ConfigValidator
+	warn        func(msg string)
+	lock        ConfigUpdateLock
+	recoveryErr error
 }
 
 func newConfigPipeline(fs FileSystem, source ReleaseSource, opts configPipelineOptions) *configPipeline {
@@ -94,7 +95,12 @@ func newConfigPipeline(fs FileSystem, source ReleaseSource, opts configPipelineO
 	} else {
 		p.lock = noopConfigUpdateLock{}
 	}
-	p.migrateLegacyTemplate(context.Background())
+	if err := p.recoverConfigTransaction(context.Background()); err != nil {
+		p.recoveryErr = err
+		p.warn(fmt.Sprintf("config recovery failed: %v", err))
+	} else {
+		p.migrateLegacyTemplate(context.Background())
+	}
 	return p
 }
 
@@ -136,6 +142,129 @@ type fileSnapshot struct {
 	exists bool
 }
 
+type configTransactionPhase string
+
+const (
+	transactionPrepared        configTransactionPhase = "prepared"
+	transactionConfigCommitted configTransactionPhase = "config-committed"
+	transactionCommitted       configTransactionPhase = "committed"
+)
+
+type transactionSnapshot struct {
+	Data   []byte `json:"data,omitempty"`
+	Exists bool   `json:"exists"`
+}
+
+type configTransactionRecord struct {
+	Phase            configTransactionPhase `json:"phase"`
+	StagingDir       string                 `json:"staging_dir"`
+	CandidatePath    string                 `json:"candidate_path,omitempty"`
+	BackupPath       string                 `json:"backup_path,omitempty"`
+	Config           transactionSnapshot    `json:"config"`
+	SubscriptionData transactionSnapshot    `json:"subscription_data"`
+}
+
+func transactionSnapshotOf(snapshot fileSnapshot) transactionSnapshot {
+	return transactionSnapshot{Data: snapshot.data, Exists: snapshot.exists}
+}
+
+func (p *configPipeline) writeConfigTransaction(record configTransactionRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("encoding config transaction: %w", err)
+	}
+	if err := p.fs.MkdirAll(stateDir, filePermUserRWX); err != nil {
+		return fmt.Errorf("creating config transaction directory: %w", err)
+	}
+	tmpPath := configApplyTransactionFile + ".tmp"
+	if err := p.fs.WriteFile(tmpPath, data, filePermUserRW); err != nil {
+		return errors.Join(fmt.Errorf("writing config transaction: %w", err), p.fs.Remove(tmpPath))
+	}
+	if err := p.fs.Rename(tmpPath, configApplyTransactionFile); err != nil {
+		return errors.Join(fmt.Errorf("committing config transaction: %w", err), p.fs.Remove(tmpPath))
+	}
+	return nil
+}
+
+func (p *configPipeline) clearConfigTransaction() error {
+	if err := p.fs.Remove(configApplyTransactionFile); err != nil {
+		return fmt.Errorf("removing config transaction: %w", err)
+	}
+	return nil
+}
+
+func (p *configPipeline) recoverConfigTransaction(ctx context.Context) error {
+	data, err := p.fs.ReadFile(configApplyTransactionFile)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading config transaction: %w", err)
+	}
+	var record configTransactionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return fmt.Errorf("decoding config transaction: %w", err)
+	}
+	release, err := p.lock.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquiring config recovery lock: %w", err)
+	}
+	defer release()
+
+	data, err = p.fs.ReadFile(configApplyTransactionFile)
+	if err != nil {
+		return fmt.Errorf("reading config transaction under lock: %w", err)
+	}
+	if err := json.Unmarshal(data, &record); err != nil {
+		return fmt.Errorf("decoding config transaction under lock: %w", err)
+	}
+	if record.Phase == transactionCommitted {
+		var cleanupErrs []error
+		for _, path := range []string{record.StagingDir, record.CandidatePath} {
+			if path == "" {
+				continue
+			}
+			if err := p.fs.Remove(path); err != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("cleanup committed artifact: %w", err))
+			}
+		}
+		if err := p.clearConfigTransaction(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
+		return errors.Join(cleanupErrs...)
+	}
+	if record.Phase != transactionPrepared && record.Phase != transactionConfigCommitted {
+		return fmt.Errorf("unknown config transaction phase %q", record.Phase)
+	}
+
+	var recoveryErrs []error
+	if err := p.restoreFile(configYAML, fileSnapshot{data: record.Config.Data, exists: record.Config.Exists}); err != nil {
+		recoveryErrs = append(recoveryErrs, fmt.Errorf("restore config: %w", err))
+	}
+	if err := p.restoreFile(subscriptionDataFile, fileSnapshot{data: record.SubscriptionData.Data, exists: record.SubscriptionData.Exists}); err != nil {
+		recoveryErrs = append(recoveryErrs, fmt.Errorf("restore subscription data: %w", err))
+	}
+	for _, path := range []string{record.StagingDir, record.CandidatePath, record.BackupPath} {
+		if path == "" {
+			continue
+		}
+		if err := p.fs.Remove(path); err != nil {
+			recoveryErrs = append(recoveryErrs, fmt.Errorf("cleanup %s: %w", path, err))
+		}
+	}
+	if len(recoveryErrs) > 0 {
+		return errors.Join(recoveryErrs...)
+	}
+	return p.clearConfigTransaction()
+}
+
+func (p *configPipeline) ensureConfigRecovery() error {
+	if p.recoveryErr != nil {
+		return fmt.Errorf("configuration recovery is incomplete: %w", p.recoveryErr)
+	}
+	return nil
+}
+
 func (p *configPipeline) snapshotFile(path string) (fileSnapshot, error) {
 	data, err := p.fs.ReadFile(path)
 	if err == nil {
@@ -169,6 +298,9 @@ func looksLikeURL(s string) bool {
 }
 
 func (p *configPipeline) SetSubscriptionSource(ctx context.Context, source string) error {
+	if err := p.ensureConfigRecovery(); err != nil {
+		return err
+	}
 	trimmed := strings.TrimSpace(source)
 	if trimmed == "" {
 		return fmt.Errorf("subscription source cannot be empty")
@@ -304,6 +436,9 @@ func (p *configPipeline) subscriptionSource() (string, error) {
 }
 
 func (p *configPipeline) PreviewConfig(ctx context.Context) (string, error) {
+	if err := p.ensureConfigRecovery(); err != nil {
+		return "", err
+	}
 	release, err := p.lock.Acquire(ctx)
 	if err != nil {
 		return "", err
@@ -313,11 +448,21 @@ func (p *configPipeline) PreviewConfig(ctx context.Context) (string, error) {
 }
 
 func (p *configPipeline) previewConfig(ctx context.Context) (string, error) {
+	return p.previewConfigWithCandidate(ctx, nil)
+}
+
+func (p *configPipeline) previewConfigWithCandidate(ctx context.Context, candidate *subscriptionCandidate) (string, error) {
 	p.migrateLegacyTemplateLocked()
 	if _, err := p.subscriptionSource(); err != nil {
 		return "", err
 	}
-	subData, err := p.fs.ReadFile(subscriptionDataFile)
+	var subData []byte
+	var err error
+	if candidate != nil {
+		subData = candidate.data
+	} else {
+		subData, err = p.fs.ReadFile(subscriptionDataFile)
+	}
 	if err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
@@ -385,52 +530,64 @@ type stagedConfig struct {
 	path string
 }
 
-func (p *configPipeline) refreshSubscription(ctx context.Context) error {
+type subscriptionCandidate struct {
+	path string
+	data []byte
+}
+
+func candidatePath(candidate *subscriptionCandidate) string {
+	if candidate == nil {
+		return ""
+	}
+	return candidate.path
+}
+
+func (p *configPipeline) refreshSubscription(ctx context.Context) (*subscriptionCandidate, error) {
 	source, err := p.subscriptionSource()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if source == "" {
-		return ErrSubscriptionSourceNotConfigured
+		return nil, ErrSubscriptionSourceNotConfigured
 	}
 	if source != remoteSubscriptionSource {
-		return nil
+		return nil, nil
 	}
 
 	data, err := p.fs.ReadFile(subscriptionURLFile)
 	if err != nil {
-		return fmt.Errorf("reading subscription URL: %w", err)
+		return nil, fmt.Errorf("reading subscription URL: %w", err)
 	}
 	url := strings.TrimSpace(string(data))
 	if url == "" {
-		return nil
+		return nil, nil
 	}
 
 	tmpPath := subscriptionDataFile + ".tmp"
+	if err := p.fs.Remove(tmpPath); err != nil {
+		return nil, fmt.Errorf("removing stale subscription staging: %w", err)
+	}
 	cleanupDownload := func(primary error) error {
 		return errors.Join(primary, p.fs.Remove(tmpPath))
 	}
 	if err := p.source.Download(ctx, url, tmpPath); err != nil {
-		return cleanupDownload(fmt.Errorf("fetching subscription: %w", err))
+		return nil, cleanupDownload(fmt.Errorf("fetching subscription: %w", err))
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, cleanupDownload(err)
 	}
 	fetched, err := p.fs.ReadFile(tmpPath)
 	if err != nil {
-		return cleanupDownload(err)
+		return nil, cleanupDownload(err)
 	}
 	if len(bytes.TrimSpace(fetched)) == 0 {
-		return cleanupDownload(fmt.Errorf("fetched subscription content is empty"))
+		return nil, cleanupDownload(fmt.Errorf("fetched subscription content is empty"))
 	}
-	if err := p.fs.WriteFile(subscriptionDataFile, fetched, filePermUserRW); err != nil {
-		return cleanupDownload(fmt.Errorf("writing subscription data: %w", err))
-	}
-	if err := p.fs.Remove(tmpPath); err != nil {
-		return fmt.Errorf("removing downloaded subscription: %w", err)
-	}
-	return nil
+	return &subscriptionCandidate{path: tmpPath, data: fetched}, nil
 }
 
-func (p *configPipeline) buildApplyPreview(ctx context.Context) (string, error) {
-	preview, err := p.previewConfig(ctx)
+func (p *configPipeline) buildApplyPreview(ctx context.Context, candidate *subscriptionCandidate) (string, error) {
+	preview, err := p.previewConfigWithCandidate(ctx, candidate)
 	if err != nil {
 		return "", err
 	}
@@ -464,24 +621,117 @@ func (p *configPipeline) cleanupStagedConfig(staged stagedConfig, primary error)
 	return primary
 }
 
-func (p *configPipeline) commitConfig(staged stagedConfig) (postCommitCleanupErr, applyErr error) {
-	if p.fs.FileExists(configYAML) {
-		backupPath := fmt.Sprintf("%s.bak.%d", configYAML, time.Now().Unix())
-		existing, err := p.fs.ReadFile(configYAML)
-		if err != nil {
-			return nil, p.cleanupStagedConfig(staged, err)
+func (p *configPipeline) commitConfig(staged stagedConfig, candidate *subscriptionCandidate, oldConfig, oldSubscription fileSnapshot) (postCommitCleanupErr, applyErr error) {
+	backupPath := ""
+	transactionRecorded := false
+	cleanupBeforeCommit := func(primary error) error {
+		cleanupErrs := []error{p.fs.Remove(staged.dir)}
+		if backupPath != "" {
+			cleanupErrs = append(cleanupErrs, p.fs.Remove(backupPath))
 		}
-		if err := p.fs.WriteFile(backupPath, existing, filePermUserRW); err != nil {
-			return nil, p.cleanupStagedConfig(staged, err)
+		var nonNil []error
+		for _, cleanupErr := range cleanupErrs {
+			if cleanupErr != nil {
+				nonNil = append(nonNil, cleanupErr)
+			}
+		}
+		if len(nonNil) == 0 {
+			return primary
+		}
+		return errors.Join(primary, fmt.Errorf("cleanup before commit failed: %w", errors.Join(nonNil...)))
+	}
+	rollback := func() error {
+		var rollbackErrs []error
+		if err := p.restoreFile(configYAML, oldConfig); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore config: %w", err))
+		}
+		if err := p.restoreFile(subscriptionDataFile, oldSubscription); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore subscription data: %w", err))
+		}
+		if err := p.fs.Remove(staged.dir); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("cleanup staged config: %w", err))
+		}
+		if backupPath != "" {
+			if err := p.fs.Remove(backupPath); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("cleanup config backup: %w", err))
+			}
+		}
+		if transactionRecorded {
+			if err := p.clearConfigTransaction(); err != nil {
+				p.recoveryErr = err
+				rollbackErrs = append(rollbackErrs, err)
+			}
+		}
+		return errors.Join(rollbackErrs...)
+	}
+
+	if oldConfig.exists {
+		backupPath = fmt.Sprintf("%s.bak.%d", configYAML, time.Now().UnixNano())
+		if err := p.fs.WriteFile(backupPath, oldConfig.data, filePermUserRW); err != nil {
+			return nil, cleanupBeforeCommit(fmt.Errorf("backup generated config: %w", err))
 		}
 	}
+	transaction := configTransactionRecord{
+		Phase:            transactionPrepared,
+		StagingDir:       staged.dir,
+		CandidatePath:    candidatePath(candidate),
+		BackupPath:       backupPath,
+		Config:           transactionSnapshotOf(oldConfig),
+		SubscriptionData: transactionSnapshotOf(oldSubscription),
+	}
+	if err := p.writeConfigTransaction(transaction); err != nil {
+		return nil, cleanupBeforeCommit(err)
+	}
+	transactionRecorded = true
 	if err := p.fs.Rename(staged.path, configYAML); err != nil {
-		return nil, p.cleanupStagedConfig(staged, fmt.Errorf("committing generated config: %w", err))
+		primary := fmt.Errorf("committing generated config: %w", err)
+		if rollbackErr := rollback(); rollbackErr != nil {
+			primary = errors.Join(primary, fmt.Errorf("rollback failed: %w", rollbackErr))
+		}
+		return nil, primary
 	}
-	return p.fs.Remove(staged.dir), nil
+	transaction.Phase = transactionConfigCommitted
+	if err := p.writeConfigTransaction(transaction); err != nil {
+		primary := fmt.Errorf("recording committed config transaction: %w", err)
+		if rollbackErr := rollback(); rollbackErr != nil {
+			primary = errors.Join(primary, fmt.Errorf("rollback failed: %w", rollbackErr))
+		}
+		return nil, primary
+	}
+	if candidate != nil {
+		if err := p.fs.Rename(candidate.path, subscriptionDataFile); err != nil {
+			primary := fmt.Errorf("publishing subscription data: %w", err)
+			if rollbackErr := rollback(); rollbackErr != nil {
+				primary = errors.Join(primary, fmt.Errorf("rollback failed: %w", rollbackErr))
+			}
+			return nil, primary
+		}
+		candidate.path = ""
+	}
+	transaction.Phase = transactionCommitted
+	transaction.CandidatePath = ""
+	if err := p.writeConfigTransaction(transaction); err != nil {
+		primary := fmt.Errorf("recording committed subscription transaction: %w", err)
+		if rollbackErr := rollback(); rollbackErr != nil {
+			primary = errors.Join(primary, fmt.Errorf("rollback failed: %w", rollbackErr))
+		}
+		return nil, primary
+	}
+	var cleanupErrs []error
+	if err := p.fs.Remove(staged.dir); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("cleanup staged config: %w", err))
+	}
+	if err := p.clearConfigTransaction(); err != nil {
+		p.recoveryErr = err
+		cleanupErrs = append(cleanupErrs, err)
+	}
+	return errors.Join(cleanupErrs...), nil
 }
 
 func (p *configPipeline) UpdateConfig(ctx context.Context) (applyErr error) {
+	if err := p.ensureConfigRecovery(); err != nil {
+		return err
+	}
 	release, err := p.lock.Acquire(ctx)
 	if err != nil {
 		return err
@@ -490,7 +740,14 @@ func (p *configPipeline) UpdateConfig(ctx context.Context) (applyErr error) {
 
 	preview := ""
 	statusRecorded := false
+	var candidate *subscriptionCandidate
 	defer func() {
+		if candidate != nil && candidate.path != "" {
+			if cleanupErr := p.fs.Remove(candidate.path); cleanupErr != nil {
+				applyErr = errors.Join(applyErr, fmt.Errorf("cleanup subscription staging: %w", cleanupErr))
+			}
+			candidate.path = ""
+		}
 		if applyErr != nil && !statusRecorded {
 			statusErr := p.recordConfigApply(ConfigApplyFailed, preview, applyErr)
 			statusRecorded = true
@@ -500,10 +757,11 @@ func (p *configPipeline) UpdateConfig(ctx context.Context) (applyErr error) {
 		}
 	}()
 
-	if err := p.refreshSubscription(ctx); err != nil {
+	candidate, err = p.refreshSubscription(ctx)
+	if err != nil {
 		return err
 	}
-	preview, err = p.buildApplyPreview(ctx)
+	preview, err = p.buildApplyPreview(ctx, candidate)
 	if err != nil {
 		return err
 	}
@@ -516,11 +774,17 @@ func (p *configPipeline) UpdateConfig(ctx context.Context) (applyErr error) {
 	if p.validate != nil {
 		if err := p.validate.Validate(ctx, staged.path); err != nil {
 			failure := p.cleanupStagedConfig(staged, err)
+			if candidate != nil && candidate.path != "" {
+				if cleanupErr := p.fs.Remove(candidate.path); cleanupErr != nil {
+					failure = errors.Join(failure, fmt.Errorf("cleanup subscription staging: %w", cleanupErr))
+				}
+				candidate.path = ""
+			}
 			state := ConfigValidationFailed
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				state = ConfigApplyFailed
 			}
-			statusErr := p.recordConfigApply(state, preview, err)
+			statusErr := p.recordConfigApply(state, preview, failure)
 			statusRecorded = true
 			if statusErr != nil {
 				failure = errors.Join(failure, statusErr)
@@ -532,7 +796,15 @@ func (p *configPipeline) UpdateConfig(ctx context.Context) (applyErr error) {
 		return p.cleanupStagedConfig(staged, err)
 	}
 
-	postCommitCleanupErr, applyErr := p.commitConfig(staged)
+	oldConfig, err := p.snapshotFile(configYAML)
+	if err != nil {
+		return fmt.Errorf("snapshotting current config: %w", err)
+	}
+	oldSubscription, err := p.snapshotFile(subscriptionDataFile)
+	if err != nil {
+		return fmt.Errorf("snapshotting current subscription data: %w", err)
+	}
+	postCommitCleanupErr, applyErr := p.commitConfig(staged, candidate, oldConfig, oldSubscription)
 	if applyErr != nil {
 		return applyErr
 	}
@@ -588,6 +860,9 @@ func (p *configPipeline) LastConfigApply(ctx context.Context) (ConfigApplyStatus
 // Validate runs the configured ConfigValidator against the generated config.
 // A nil validator means validation is a no-op (validation not configured).
 func (p *configPipeline) ValidateConfig(ctx context.Context) error {
+	if err := p.ensureConfigRecovery(); err != nil {
+		return err
+	}
 	if p.validate == nil {
 		return nil
 	}

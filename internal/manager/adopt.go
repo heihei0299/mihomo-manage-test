@@ -27,6 +27,9 @@ type AdoptReport struct {
 // changes once the differences have been adopted.
 func (p *configPipeline) AdoptConfig(ctx context.Context, force bool) (AdoptReport, error) {
 	report := AdoptReport{}
+	if err := p.ensureConfigRecovery(); err != nil {
+		return report, err
+	}
 	release, err := p.lock.Acquire(ctx)
 	if err != nil {
 		return report, err
