@@ -156,6 +156,13 @@ func TestTUIScheduleStatusShowsLegacy(t *testing.T) {
 	}
 }
 
+func TestTUIConfigViewShowsSubscriptionEditError(t *testing.T) {
+	m := model{configTab: configTabSubscription, execResult: "failed", actionErr: errors.New("config update failed")}
+	if got := m.configView(); !strings.Contains(got, "config update failed") {
+		t.Fatalf("config view = %q, want edit error", got)
+	}
+}
+
 func TestTUISubscriptionConfigOffersEditor(t *testing.T) {
 	m := model{configTab: configTabSubscription}
 	if !strings.Contains(m.configView(), "e) Edit") {

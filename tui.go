@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -135,15 +134,6 @@ type scheduleDoneMsg struct {
 
 var schedulePresets = []time.Duration{0, time.Hour, 6 * time.Hour, 12 * time.Hour, 24 * time.Hour}
 
-func editorCommand(editor, path string) (*exec.Cmd, error) {
-	parts := strings.Fields(editor)
-	if len(parts) == 0 {
-		return nil, fmt.Errorf("editor is empty")
-	}
-	args := append(append([]string{}, parts[1:]...), path)
-	return exec.Command(parts[0], args...), nil
-}
-
 func editSubscriptionCmd(cfg manager.ConfigManager, ctx context.Context) tea.Cmd {
 	file, err := os.CreateTemp("", "mihomo-subscription-*")
 	if err != nil {
@@ -155,11 +145,7 @@ func editSubscriptionCmd(cfg manager.ConfigManager, ctx context.Context) tea.Cmd
 		return func() tea.Msg { return subscriptionEditMsg{err: err} }
 	}
 
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vi"
-	}
-	command, err := editorCommand(editor, path)
+	command, err := configuredEditorCommand(path)
 	if err != nil {
 		os.Remove(path)
 		return func() tea.Msg { return subscriptionEditMsg{err: err} }
@@ -176,7 +162,10 @@ func editSubscriptionCmd(cfg manager.ConfigManager, ctx context.Context) tea.Cmd
 		if strings.TrimSpace(string(data)) == "" {
 			return subscriptionEditMsg{err: fmt.Errorf("subscription source cannot be empty")}
 		}
-		return subscriptionEditMsg{err: cfg.SetSubscriptionSource(ctx, string(data))}
+		if err := cfg.SetSubscriptionSource(ctx, string(data)); err != nil {
+			return subscriptionEditMsg{err: fmt.Errorf("config update failed: %w", err)}
+		}
+		return subscriptionEditMsg{}
 	})
 }
 
@@ -525,6 +514,8 @@ func (m model) updateConfigMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.configTab = (m.configTab - 1 + 3) % 3
 		return m, nil
 	case "r":
+		m.execResult = ""
+		m.actionErr = nil
 		return m, fetchConfigPreview(m.config, tuiContext(m.ctx))
 	case "e":
 		if m.configTab == configTabSubscription {
@@ -772,7 +763,13 @@ func (m model) configView() string {
 		}
 	}
 
-	return tabLine + content + "\n\nTab/← → switch tab  r) refresh preview  q) back"
+	editResult := ""
+	if m.execResult == "success" {
+		editResult = "\n✓ Configuration updated"
+	} else if m.execResult == "failed" {
+		editResult = fmt.Sprintf("\n✗ %v", m.actionErr)
+	}
+	return tabLine + content + editResult + "\n\nTab/← → switch tab  r) refresh preview  q) back"
 }
 
 func startTUI(ctx context.Context, ctrl manager.ServiceControl, lifecycle manager.LifecycleManager, cfg manager.ConfigManager, schedule manager.ScheduleManager) error {

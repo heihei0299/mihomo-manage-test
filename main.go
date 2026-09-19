@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -189,8 +191,7 @@ func main() {
 		}
 		exitCode = h.Upgrade(ctx, ver)
 	case "logs":
-		cliLogs(args[1:])
-		return
+		exitCode = cliLogs(args[1:])
 	case "versions":
 		exitCode = h.Versions(ctx)
 	case "template":
@@ -292,7 +293,23 @@ func handleSchedule(h *cli.Handler, ctx context.Context, args []string) int {
 	}
 }
 
-func cliLogs(args []string) {
+func cliLogs(args []string) int {
+	return cliLogsForOS(runtime.GOOS, args)
+}
+
+func cliLogsForOS(goos string, args []string) int {
+	if err := runCLILogsForOS(goos, args); err != nil {
+		fmt.Fprintf(os.Stderr, "logs failed: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runCLILogsForOS(goos string, args []string) error {
+	if goos != "linux" {
+		return manager.UnsupportedPlatformError{Feature: "logs", GOOS: goos}
+	}
+
 	follow := false
 	tail := 50
 	for _, a := range args {
@@ -313,10 +330,7 @@ func cliLogs(args []string) {
 	cmd := exec.Command("journalctl", journalArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "logs failed: %v\n", err)
-		os.Exit(1)
-	}
+	return cmd.Run()
 }
 
 func cliEditFile(cfg manager.ConfigManager, path string, args []string) int {
@@ -324,17 +338,39 @@ func cliEditFile(cfg manager.ConfigManager, path string, args []string) int {
 		fmt.Fprintf(os.Stderr, "usage: mihomo-manager %s edit\n", path)
 		return 1
 	}
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vi"
+	before, beforeErr := os.ReadFile(path)
+	hadBefore := beforeErr == nil
+	if beforeErr != nil && !os.IsNotExist(beforeErr) {
+		fmt.Fprintf(os.Stderr, "editor result unavailable: %v\n", beforeErr)
+		return 1
 	}
-	cmd := exec.Command(editor, path)
+	cmd, err := configuredEditorCommand(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "editor failed: %v\n", err)
+		return 1
+	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "editor failed: %v\n", err)
 		return 1
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "editor result unavailable: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		fmt.Fprintln(os.Stderr, "editor result is empty")
+		return 1
+	}
+	// A clean editor exit without changes is a successful no-op, not an apply.
+	if hadBefore && bytes.Equal(before, data) {
+		if !quietMode {
+			fmt.Println("config unchanged")
+		}
+		return 0
 	}
 	if err := cfg.UpdateConfig(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "config update failed: %v\n", err)
