@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -135,13 +134,21 @@ type scheduleDoneMsg struct {
 
 var schedulePresets = []time.Duration{0, time.Hour, 6 * time.Hour, 12 * time.Hour, 24 * time.Hour}
 
-func editorCommand(editor, path string) (*exec.Cmd, error) {
-	parts := strings.Fields(editor)
-	if len(parts) == 0 {
-		return nil, fmt.Errorf("editor is empty")
+func applyEditedSubscription(ctx context.Context, cfg manager.ConfigManager, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
 	}
-	args := append(append([]string{}, parts[1:]...), path)
-	return exec.Command(parts[0], args...), nil
+	if strings.TrimSpace(string(data)) == "" {
+		return fmt.Errorf("subscription source cannot be empty")
+	}
+	if err := cfg.SetSubscriptionSource(ctx, string(data)); err != nil {
+		return fmt.Errorf("subscription save failed: %w", err)
+	}
+	if err := cfg.UpdateConfig(ctx); err != nil {
+		return fmt.Errorf("config update failed: %w", err)
+	}
+	return nil
 }
 
 func editSubscriptionCmd(cfg manager.ConfigManager, ctx context.Context) tea.Cmd {
@@ -169,14 +176,7 @@ func editSubscriptionCmd(cfg manager.ConfigManager, ctx context.Context) tea.Cmd
 		if runErr != nil {
 			return subscriptionEditMsg{err: fmt.Errorf("editor failed: %w", runErr)}
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return subscriptionEditMsg{err: err}
-		}
-		if strings.TrimSpace(string(data)) == "" {
-			return subscriptionEditMsg{err: fmt.Errorf("subscription source cannot be empty")}
-		}
-		return subscriptionEditMsg{err: cfg.SetSubscriptionSource(ctx, string(data))}
+		return subscriptionEditMsg{err: applyEditedSubscription(ctx, cfg, path)}
 	})
 }
 
@@ -766,6 +766,11 @@ func (m model) configView() string {
 		} else {
 			content = m.previewContent
 		}
+	}
+	if m.execResult == "success" {
+		content += "\n✓ Operation succeeded"
+	} else if m.execResult == "failed" && m.actionErr != nil {
+		content += "\n✗ " + m.actionErr.Error()
 	}
 
 	return tabLine + content + "\n\nTab/← → switch tab  r) refresh preview  q) back"

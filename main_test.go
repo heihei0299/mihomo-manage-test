@@ -36,15 +36,14 @@ func TestConfigOverrideEditOpensOverrideFile(t *testing.T) {
 	}
 	t.Setenv("EDITOR", script)
 	t.Setenv("EDITOR_LOG", logPath)
-
 	cfg := &tuiMockConfig{}
 	code := handleConfigCommand(&cli.Handler{}, cfg, context.Background(), []string{"override", "edit"})
 
-	if code != 0 {
-		t.Errorf("expected exit code 0, got %d", code)
+	if code != 1 {
+		t.Errorf("expected exit code 1 when edited file cannot be read, got %d", code)
 	}
-	if !cfg.updateCalled {
-		t.Error("UpdateConfig should be called after editing")
+	if cfg.updateCalled {
+		t.Error("UpdateConfig should not be called when edited file cannot be read")
 	}
 	data, err := os.ReadFile(logPath)
 	if err != nil {

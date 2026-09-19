@@ -63,6 +63,7 @@ func (m *tuiMockLifecycle) ListVersions(ctx context.Context) ([]manager.VersionI
 
 type tuiMockConfig struct {
 	updateCalled bool
+	updateErr    error
 }
 
 func (m *tuiMockConfig) SetSubscriptionSource(ctx context.Context, url string) error { return nil }
@@ -73,7 +74,7 @@ func (m *tuiMockConfig) PreviewConfig(ctx context.Context) (string, error) { ret
 
 func (m *tuiMockConfig) UpdateConfig(ctx context.Context) error {
 	m.updateCalled = true
-	return nil
+	return m.updateErr
 }
 
 func (m *tuiMockConfig) ValidateConfig(ctx context.Context) error { return nil }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -189,8 +190,7 @@ func main() {
 		}
 		exitCode = h.Upgrade(ctx, ver)
 	case "logs":
-		cliLogs(args[1:])
-		return
+		exitCode = cliLogs(args[1:])
 	case "versions":
 		exitCode = h.Versions(ctx)
 	case "template":
@@ -229,12 +229,12 @@ func handleConfigCommand(h *cli.Handler, cfg manager.ConfigManager, ctx context.
 		}
 		return h.AdoptConfig(ctx, force)
 	case "override":
-		return cliEditFile(cfg, manager.OverrideFilePath, args[1:])
+		return cliEditFile(ctx, cfg, manager.OverrideFilePath, args[1:])
 	case "template":
 		return deprecatedError("'config template' is deprecated. Use 'mihomo-manager config override edit' instead.")
 	case "rules":
 		fmt.Fprintln(os.Stderr, "warning: 'config rules' is deprecated. Add routing rules to the 'rules:' field in override.yaml instead.")
-		return cliEditFile(cfg, manager.RoutingRulesPath, args[1:])
+		return cliEditFile(ctx, cfg, manager.RoutingRulesPath, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown config subcommand: %s\n", args[0])
 		return 1
@@ -292,7 +292,16 @@ func handleSchedule(h *cli.Handler, ctx context.Context, args []string) int {
 	}
 }
 
-func cliLogs(args []string) {
+func cliLogs(args []string) int {
+	return logsForPlatform(runtime.GOOS, args, os.Stderr)
+}
+
+func logsForPlatform(goos string, args []string, stderr io.Writer) int {
+	if goos != "linux" {
+		fmt.Fprintf(stderr, "logs failed: %v\n", manager.UnsupportedPlatformError{Feature: "logs", GOOS: goos})
+		return 1
+	}
+
 	follow := false
 	tail := 50
 	for _, a := range args {
@@ -312,14 +321,15 @@ func cliLogs(args []string) {
 	}
 	cmd := exec.Command("journalctl", journalArgs...)
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "logs failed: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "logs failed: %v\n", err)
+		return 1
 	}
+	return 0
 }
 
-func cliEditFile(cfg manager.ConfigManager, path string, args []string) int {
+func cliEditFile(ctx context.Context, cfg manager.ConfigManager, path string, args []string) int {
 	if len(args) != 1 || args[0] != "edit" {
 		fmt.Fprintf(os.Stderr, "usage: mihomo-manager %s edit\n", path)
 		return 1
@@ -328,7 +338,15 @@ func cliEditFile(cfg manager.ConfigManager, path string, args []string) int {
 	if editor == "" {
 		editor = "vi"
 	}
-	cmd := exec.Command(editor, path)
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "editor canceled: %v\n", err)
+		return 1
+	}
+	cmd, err := editorCommand(editor, path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "editor failed: %v\n", err)
+		return 1
+	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -336,7 +354,20 @@ func cliEditFile(cfg manager.ConfigManager, path string, args []string) int {
 		fmt.Fprintf(os.Stderr, "editor failed: %v\n", err)
 		return 1
 	}
-	if err := cfg.UpdateConfig(context.Background()); err != nil {
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "editor canceled: %v\n", err)
+		return 1
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "editor failed: reading result: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		fmt.Fprintln(os.Stderr, "config update skipped: editor result is empty")
+		return 1
+	}
+	if err := cfg.UpdateConfig(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "config update failed: %v\n", err)
 		return 1
 	}
